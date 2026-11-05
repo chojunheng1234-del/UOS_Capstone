@@ -1,17 +1,18 @@
 """
 모델 ①: Gaussian VAE
-  Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
+  Encoder  x → Tokenizer (변수 하나 = 토큰 하나) → Transformer → (μ, log σ²)
+  Decoder  z → Transformer → Reconstructor → 연속 변수 (μ, log σ²), 범주별 점수
   사전분포  p(z) = N(0, I)
   디코더    p(x|z): 연속 변수 N(μ(z), σ²(z)), 범주 변수 softmax
   생성      z ~ N(0, I) → x ~ p(x|z)
 
-이 파일만 읽어도 모델 전체를 알 수 있도록 뼈대(Tokenizer ~ Reconstructor)를 이 안에 둔다 (gmvae.py도 같은 코드).
+이 파일만 읽어도 모델 전체를 알 수 있도록 뼈대(Tokenizer ~ Decoder)를 이 안에 둔다 (gmvae.py도 같은 코드).
 
 Reference:
 [1] Kingma & Welling (2014), Auto-Encoding Variational Bayes
 [2] Gorishniy et al. (2021), Revisiting Deep Learning Models for Tabular Data (FT-Transformer: Tokenizer, Transformer)
 
-코드 출처: Tokenizer ~ Reconstructor는 https://github.com/amazon-science/tabsyn (Apache-2.0)의 코드를 수정해 사용
+코드 출처: Tokenizer, MultiheadAttention, Transformer, Reconstructor는 https://github.com/amazon-science/tabsyn (Apache-2.0)의 코드를 수정해 사용
 """
 #%%
 import math
@@ -206,35 +207,6 @@ class Transformer(nn.Module):
             x = self._end_residual(x, x_residual, layer, 1)
         return x
 
-class VAE(nn.Module):
-    def __init__(self, d_numerical, categories, num_layers, hid_dim, n_head = 1, factor = 32, bias = True):
-        super(VAE, self).__init__()
-
-        self.d_numerical = d_numerical
-        self.categories = categories
-        self.hid_dim = hid_dim
-        d_token = hid_dim
-        self.n_head = n_head
-
-        self.Tokenizer = Tokenizer(d_numerical, categories, d_token, bias = bias)
-        self.encoder_mu = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
-        self.encoder_logvar = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
-        self.decoder = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def forward(self, x_num, x_cat):
-        x = self.Tokenizer(x_num, x_cat)
-        mu_z = self.encoder_mu(x)
-        logvar_z = self.encoder_logvar(x)
-        z = self.reparameterize(mu_z, logvar_z)
-        h = self.decoder(z[:, 1:])                  # [CLS] 토큰은 복원에 쓰지 않는다
-
-        return h, mu_z, logvar_z
-
 class Reconstructor(nn.Module):
     """디코더 출력 토큰 → 연속 변수의 평균·log σ² / 범주별 점수(logit)
     연속 변수는 Gaussian 디코더 p(x|z) = N(μ(z), σ²(z)) (Kingma & Welling, 2014)"""
@@ -270,18 +242,54 @@ class Reconstructor(nn.Module):
         return recon_x_num, recon_x_logvar, recon_x_cat
 
 
+class Encoder(nn.Module):
+    """인코더 q(z|x): 행 → 토큰 → Transformer → 토큰별 (μ, log σ²)  [B, 1 + 변수 수, d_token]"""
+    def __init__(self, d_numerical, categories, num_layers, d_token, n_head = 1, factor = 32, bias = True):
+        super(Encoder, self).__init__()
+
+        self.Tokenizer = Tokenizer(d_numerical, categories, d_token, bias = bias)
+        self.encoder_mu = Transformer(num_layers, d_token, n_head, d_token, factor)
+        self.encoder_logvar = Transformer(num_layers, d_token, n_head, d_token, factor)
+
+    def forward(self, x_num, x_cat):
+        x = self.Tokenizer(x_num, x_cat)
+        mu_z = self.encoder_mu(x)
+        logvar_z = self.encoder_logvar(x)
+
+        return mu_z, logvar_z
+
+class Decoder(nn.Module):
+    """디코더 p(x|z): z → Transformer → 연속 변수의 (μ, log σ²), 범주별 점수(logit)"""
+    def __init__(self, d_numerical, categories, num_layers, d_token, n_head = 1, factor = 32):
+        super(Decoder, self).__init__()
+
+        self.decoder = Transformer(num_layers, d_token, n_head, d_token, factor)
+        self.Reconstructor = Reconstructor(d_numerical, categories, d_token)
+
+    def forward(self, z):
+        h = self.decoder(z)
+        recon_x_num, recon_x_logvar, recon_x_cat = self.Reconstructor(h)
+
+        return recon_x_num, recon_x_logvar, recon_x_cat
+
 class Model_VAE(nn.Module):
     def __init__(self, num_layers, d_numerical, categories, d_token, n_head = 1, factor = 32, bias = True):
         super(Model_VAE, self).__init__()
 
-        self.VAE = VAE(d_numerical, categories, num_layers, d_token, n_head = n_head, factor = factor, bias = bias)
-        self.Reconstructor = Reconstructor(d_numerical, categories, d_token)
+        self.encoder = Encoder(d_numerical, categories, num_layers, d_token, n_head = n_head, factor = factor, bias = bias)
+        self.decoder = Decoder(d_numerical, categories, num_layers, d_token, n_head = n_head, factor = factor)
         self.d_token = d_token
         self.n_latent_tokens = d_numerical + len(categories)       # [CLS] 제외
 
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
     def forward(self, x_num, x_cat):
-        h, mu_z, logvar_z = self.VAE(x_num, x_cat)
-        recon_x_num, recon_x_logvar, recon_x_cat = self.Reconstructor(h)
+        mu_z, logvar_z = self.encoder(x_num, x_cat)                 # 인코더 q(z|x)
+        z = self.reparameterize(mu_z, logvar_z)
+        recon_x_num, recon_x_logvar, recon_x_cat = self.decoder(z[:, 1:])   # 디코더 p(x|z). [CLS]는 쓰지 않는다
 
         return recon_x_num, recon_x_logvar, recon_x_cat, mu_z, logvar_z
 
@@ -293,7 +301,7 @@ class Model_VAE(nn.Module):
 
     def sample_z(self, n):
         """z ~ N(0, I)  [n, 토큰 수, d_token]"""
-        return torch.randn(n, self.n_latent_tokens, self.d_token, device = self.Reconstructor.weight.device)
+        return torch.randn(n, self.n_latent_tokens, self.d_token, device = self.decoder.Reconstructor.weight.device)
 
     @torch.no_grad()
     def sample(self, n, batch_size = 2048):
@@ -301,7 +309,7 @@ class Model_VAE(nn.Module):
         nums, cats = [], []
         for i in range(0, n, batch_size):
             z = self.sample_z(min(batch_size, n - i))
-            x_num, x_logvar, x_cat = self.Reconstructor(self.VAE.decoder(z))
+            x_num, x_logvar, x_cat = self.decoder(z)
             nums.append((x_num + torch.exp(0.5 * x_logvar) * torch.randn_like(x_num)).cpu())
             # 범주는 디코더가 준 확률분포 p(x|z)에서 뽑는다 (argmax를 쓰면 희귀 범주가 생성되지 않음)
             cats.append(torch.stack([torch.multinomial(F.softmax(l, dim = -1), 1).squeeze(1)

@@ -6,7 +6,7 @@
 ## 구조
 
 모델마다 **파일 하나에 그 모델 전체**를 둔다. 파일 하나만 읽어도 모델을 이해할 수 있게 하기 위해서다.
-그래서 뼈대(Tokenizer, Transformer, VAE, Reconstructor)는 모델 파일마다 같은 코드로 들어 있다.
+그래서 뼈대(Tokenizer, Transformer, Reconstructor, Encoder, Decoder)는 모델 파일마다 같은 코드로 들어 있다.
 
 ```
 modules/
@@ -17,7 +17,14 @@ modules/
 └── utils.py           set_random_seed, get_device
 ```
 
-모델 구조: Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
+모델 구조 (각 모델 파일 안의 클래스):
+
+```
+Tokenizer, MultiheadAttention, Transformer, Reconstructor     부품
+Encoder   x → Tokenizer → Transformer → (μ, log σ²)          q(z|x)
+Decoder   z → Transformer → Reconstructor → 연속 (μ, log σ²), 범주 점수   p(x|z)
+Model_*   Encoder + 재매개변수화 + Decoder + 사전분포(kl, sample_z)
+```
 모델끼리 다른 곳은 각 파일 맨 아래 클래스의 사전분포 부분(`kl`, `sample_z`)뿐이다.
 
 디코더 p(x|z) (모든 VAE 모델 공통, Kingma & Welling 2014):
@@ -94,4 +101,4 @@ prior["WE"], prior["delta0"]                  # 범주별 의미 위치 [k, 16],
 - Dilokthanakul et al. (2016), Deep Unsupervised Clustering with Gaussian Mixture Variational Autoencoders
 - Gorishniy et al. (2021), Revisiting Deep Learning Models for Tabular Data (FT-Transformer)
 
-코드 출처: `Tokenizer` ~ `Reconstructor`는 [amazon-science/tabsyn](https://github.com/amazon-science/tabsyn) (Apache-2.0)의 코드를 수정해 사용
+코드 출처: `Tokenizer`, `MultiheadAttention`, `Transformer`, `Reconstructor`는 [amazon-science/tabsyn](https://github.com/amazon-science/tabsyn) (Apache-2.0)의 코드를 수정해 사용
