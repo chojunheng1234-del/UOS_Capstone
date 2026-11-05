@@ -1,10 +1,12 @@
 """
-Stage 1 VAE 학습. TabSyn의 train1.py 구조를 따른다.
-  손실 = MSE(연속) + CE(범주) + β × KL,  β는 max_beta에서 시작해 검증 손실이 정체하면 × lambda (min_beta까지)
+모델 ①: Gaussian VAE 학습. TabSyn의 train1.py 구조를 따른다.
 
-원본과 다른 점
-  - 검증 데이터: TabSyn은 test 분할을 쓰지만, 여기서는 학습 데이터의 일부(val_frac)를 쓴다 (홀드아웃은 평가 전용)
-  - 검증 손실이 가장 낮은 epoch의 가중치를 저장하고, 오래 개선이 없으면 조기 종료한다
+순수 VAE만 둔다. 손실은 표준 ELBO의 음수 (행별 합):
+  재구성 = 0.5 × Σ(연속 오차²)  [분산 1의 Gaussian]  +  Σ 범주별 cross-entropy
+  KL     = Σ KL(q(z|x) || N(0, I))  [디코더가 쓰는 토큰만, [CLS] 제외]
+  손실   = 재구성 + KL   (β = 1 고정. TabSyn의 β 스케줄링·평균 손실은 쓰지 않는다)
+
+학습 절차(옵티마이저, 검증 분할, 조기 종료)는 모든 비교 모델에서 같게 둔다.
 
 Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py
@@ -15,46 +17,36 @@ import time
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+import torch.nn.functional as F
 #%%
 def compute_loss(X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
-    ce_loss_fn = nn.CrossEntropyLoss()
-    mse_loss = (X_num - Recon_X_num).pow(2).mean()
+    """행별 평균 (재구성, KL, 범주 복원 정확도)"""
+    mse_loss = 0.5 * (X_num - Recon_X_num).pow(2).sum(dim = 1).mean()
     ce_loss = 0
     acc = 0
-    total_num = 0
-
     for idx, x_cat in enumerate(Recon_X_cat):
-        ce_loss += ce_loss_fn(x_cat, X_cat[:, idx])
-        x_hat = x_cat.argmax(dim = -1)
-        acc += (x_hat == X_cat[:, idx]).float().sum()
-        total_num += x_hat.shape[0]
+        ce_loss += F.cross_entropy(x_cat, X_cat[:, idx])
+        acc += (x_cat.argmax(dim = -1) == X_cat[:, idx]).float().mean()
+    acc /= (idx + 1)
 
-    ce_loss /= (idx + 1)
-    acc /= total_num
-
-    temp = 1 + logvar_z - mu_z.pow(2) - logvar_z.exp()
-    loss_kld = -0.5 * torch.mean(temp.mean(-1).mean())
+    mu, logvar = mu_z[:, 1:], logvar_z[:, 1:]          # [CLS] 토큰은 디코더가 쓰지 않으므로 제외
+    loss_kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim = (1, 2)).mean()
     return mse_loss, ce_loss, loss_kld, acc
 
 
 def train_function(model, X_num, X_cat, config, device):
     """
-    X_num:  연속 변수 (전처리 완료, 표준화 등)      FloatTensor [N, 연속 변수 수]
-    X_cat:  범주 번호 0 ~ k-1                      LongTensor  [N, 범주 변수 수]
-    config: seed, val_frac, lr, epochs, batch_size, max_beta, min_beta, lambda, beta_patience, stop_patience
-    반환:   가장 좋은 epoch의 가중치를 불러온 model, epoch별 기록(DataFrame)
+    X_num:  연속 변수 (전처리 완료)     FloatTensor [N, 연속 변수 수]
+    X_cat:  범주 번호 0 ~ k-1          LongTensor  [N, 범주 변수 수]
+    config: seed, val_frac, lr, epochs, batch_size, patience
+    반환:   검증 손실이 가장 낮은 epoch의 가중치를 불러온 model, epoch별 기록(DataFrame)
     """
-    beta = config['max_beta']
-
     g = torch.Generator().manual_seed(config['seed'])
     perm = torch.randperm(len(X_num), generator = g)
     n_val = int(len(perm) * config['val_frac'])
     val_idx, tr_idx = perm[:n_val], perm[n_val:]
 
     optimizer = torch.optim.Adam(model.parameters(), lr = config['lr'])
-    scheduler = ReduceLROnPlateau(optimizer, mode = 'min', factor = 0.95, patience = 10)
 
     best_val_loss, best_state, patience, history = float('inf'), None, 0, []
     for epoch in range(config['epochs']):
@@ -67,7 +59,7 @@ def train_function(model, X_num, X_cat, config, device):
             Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
             loss_mse, loss_ce, loss_kld, train_acc = compute_loss(
                 batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)
-            loss = loss_mse + loss_ce + beta * loss_kld
+            loss = loss_mse + loss_ce + loss_kld
             loss.backward()
             optimizer.step()
 
@@ -83,25 +75,21 @@ def train_function(model, X_num, X_cat, config, device):
                 Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
                 for key, v in zip(val, compute_loss(batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)):
                     val[key] += v.item() * len(idx) / len(val_idx)
-        val_loss = val['val_mse'] + val['val_ce']
-        scheduler.step(val_loss)
+        val_loss = val['val_mse'] + val['val_ce'] + val['val_kld']
+
+        history.append(dict(epoch = epoch + 1, **{k: np.mean(v) for k, v in logs.items()}, **val, val_loss = val_loss))
+        print(f"[epoch {epoch + 1:03d}] loss {np.mean(logs['loss']):.4f} (mse {np.mean(logs['loss_mse']):.4f}, "
+              f"ce {np.mean(logs['loss_ce']):.4f}, kld {np.mean(logs['loss_kld']):.4f}) | "
+              f"val loss {val_loss:.4f}, acc {val['val_acc']:.4f} | {time.time() - t0:.0f}s")
 
         if val_loss < best_val_loss - 1e-4:
             best_val_loss, patience = val_loss, 0
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
             patience += 1
-            if patience % config['beta_patience'] == 0 and beta > config['min_beta']:
-                beta = beta * config['lambda']                      # 정체하면 KL 가중치를 줄인다
-            if patience >= config['stop_patience']:
+            if patience >= config['patience']:
                 print(f"Early stopping (epoch {epoch + 1})")
                 break
-
-        history.append(dict(epoch = epoch + 1, beta = beta, **{k: np.mean(v) for k, v in logs.items()}, **val))
-        print(f"[epoch {epoch + 1:03d}] loss {np.mean(logs['loss']):.4f} (mse {np.mean(logs['loss_mse']):.4f}, "
-              f"ce {np.mean(logs['loss_ce']):.4f}, kld {np.mean(logs['loss_kld']):.4f}) | "
-              f"val mse {val['val_mse']:.4f}, ce {val['val_ce']:.4f}, acc {val['val_acc']:.4f} | "
-              f"beta {beta:.5f} | {time.time() - t0:.0f}s")
 
     model.load_state_dict(best_state)
     model.eval()

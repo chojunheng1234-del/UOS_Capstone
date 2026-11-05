@@ -1,12 +1,14 @@
 """
-Stage 1 VAE. TabSyn / SPT의 model1.py 구조를 그대로 따른다.
-  Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 → z → Transformer 디코더 → Reconstructor
+모델 ①: Gaussian VAE. TabSyn / SPT의 model1.py 구조(Transformer VAE)를 따른다.
+  Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
+  사전분포 p(z) = N(0, I), 생성: z ~ N(0, I) → 디코더
 
+순수 VAE만 둔다. 모델 간 비교를 위해 다른 장치(확산, β 스케줄링 등)는 넣지 않는다.
 원본과 다른 점
-  1. 인코더 분산을 학습한다 (encoder_logvar). 사전분포 N(0, I)의 Gaussian VAE (TabSyn과 동일, SPT는 분산 고정)
+  1. 인코더 분산을 학습한다 (encoder_logvar). 표준 VAE의 형태 (SPT는 분산을 0.1로 고정)
   2. Tokenizer.forward 중복 정의를 하나로 정리
-  3. 범주마다 학습에 없는 범주(UNK) 자리를 하나씩 추가
-  4. sample(): 사전분포 N(0, I)에서 z를 뽑아 바로 생성 (모델 ①). 범주는 argmax가 아니라 확률에 따라 샘플링
+  3. sample(): 사전분포에서 z를 뽑아 생성한다. 범주는 디코더가 준 확률분포에서 샘플링한다
+  4. Stage 2용 Encoder_model / Decoder_model은 두지 않는다 (모델 ③ TabSyn에서 추가)
 
 Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/model.py
@@ -25,11 +27,10 @@ class Tokenizer(nn.Module):
     """[CLS] + 연속 변수 (값 × 가중치 벡터) + 범주 변수 (임베딩) → [B, 1 + 연속 수 + 범주 수, d_token]"""
     def __init__(self, d_numerical, categories, d_token, bias):
         super().__init__()
-        n_classes = [k + 1 for k in categories]              # +1: UNK
         d_bias = d_numerical + len(categories)
-        category_offsets = torch.tensor([0] + n_classes[:-1], dtype=torch.long).cumsum(0)
+        category_offsets = torch.tensor([0] + categories[:-1], dtype=torch.long).cumsum(0)
         self.register_buffer('category_offsets', category_offsets)
-        self.category_embeddings = nn.Embedding(sum(n_classes), d_token)
+        self.category_embeddings = nn.Embedding(sum(categories), d_token)
         nn_init.kaiming_uniform_(self.category_embeddings.weight, a=math.sqrt(5))
 
         self.weight = nn.Parameter(Tensor(d_numerical + 1, d_token))
@@ -221,9 +222,6 @@ class VAE(nn.Module):
         self.encoder_logvar = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
         self.decoder = Transformer(num_layers, hid_dim, n_head, hid_dim, factor)
 
-    def get_embedding(self, x):
-        return self.encoder_mu(x).detach()
-
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -278,10 +276,6 @@ class Model_VAE(nn.Module):
         self.d_token = d_token
         self.n_latent_tokens = d_numerical + len(categories)       # [CLS] 제외
 
-    def get_embedding(self, x_num, x_cat):
-        x = self.VAE.Tokenizer(x_num, x_cat)
-        return self.VAE.get_embedding(x)
-
     def forward(self, x_num, x_cat):
         h, mu_z, logvar_z = self.VAE(x_num, x_cat)
         recon_x_num, recon_x_cat = self.Reconstructor(h)
@@ -290,49 +284,15 @@ class Model_VAE(nn.Module):
 
     @torch.no_grad()
     def sample(self, n, batch_size = 2048):
-        """모델 ①: z ~ N(0, I)  [n, 토큰 수, d_token] → 디코더 → 복원"""
+        """z ~ N(0, I)  [n, 토큰 수, d_token] → 디코더 → 연속: 평균, 범주: 확률분포에서 샘플링"""
         device = self.Reconstructor.weight.device
         nums, cats = [], []
         for i in range(0, n, batch_size):
             z = torch.randn(min(batch_size, n - i), self.n_latent_tokens, self.d_token, device = device)
             x_num, x_cat = self.Reconstructor(self.VAE.decoder(z))
             nums.append(x_num.cpu())
-            # 범주는 argmax가 아니라 확률에 따라 뽑는다 → 희귀 범주도 생성됨
+            # 범주는 디코더가 준 확률분포 p(x|z)에서 뽑는다 (argmax를 쓰면 희귀 범주가 생성되지 않음)
             cats.append(torch.stack([torch.multinomial(F.softmax(l, dim = -1), 1).squeeze(1)
                                      for l in x_cat], dim = 1).cpu())
         return torch.cat(nums), torch.cat(cats)
 
-
-class Encoder_model(nn.Module):
-    """학습된 VAE에서 인코더만 떼어 쓴다 (Stage 2 확산 모델의 학습 데이터 z 추출용)"""
-    def __init__(self, num_layers, d_numerical, categories, d_token, n_head, factor, bias = True):
-        super().__init__()
-        self.Tokenizer = Tokenizer(d_numerical, categories, d_token, bias)
-        self.VAE_Encoder = Transformer(num_layers, d_token, n_head, d_token, factor)
-
-    def load_weights(self, Pretrained_VAE):
-        self.Tokenizer.load_state_dict(Pretrained_VAE.VAE.Tokenizer.state_dict())
-        self.VAE_Encoder.load_state_dict(Pretrained_VAE.VAE.encoder_mu.state_dict())
-
-    def forward(self, x_num, x_cat):
-        x = self.Tokenizer(x_num, x_cat)
-        z = self.VAE_Encoder(x)
-
-        return z
-
-class Decoder_model(nn.Module):
-    """학습된 VAE에서 디코더만 떼어 쓴다 (Stage 2에서 생성한 z를 표로 복원)"""
-    def __init__(self, num_layers, d_numerical, categories, d_token, n_head, factor, bias = True):
-        super().__init__()
-        self.VAE_Decoder = Transformer(num_layers, d_token, n_head, d_token, factor)
-        self.Detokenizer = Reconstructor(d_numerical, categories, d_token)
-
-    def load_weights(self, Pretrained_VAE):
-        self.VAE_Decoder.load_state_dict(Pretrained_VAE.VAE.decoder.state_dict())
-        self.Detokenizer.load_state_dict(Pretrained_VAE.Reconstructor.state_dict())
-
-    def forward(self, z):
-        h = self.VAE_Decoder(z)
-        x_hat_num, x_hat_cat = self.Detokenizer(h)
-
-        return x_hat_num, x_hat_cat
