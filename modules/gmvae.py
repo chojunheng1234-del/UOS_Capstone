@@ -1,16 +1,20 @@
 """
-모델 ②: GMVAE. TabSyn / SPT의 model1.py 구조(Transformer VAE)를 따른다.
+모델 ②: GMVAE
   Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
-  사전분포 p(z) = Σ_y π_y N(μ_y, diag σ_y²),  y = 1, ..., G   (z: [CLS]를 뺀 토큰들을 펼친 벡터)
-  q(y|x): 인코더 출력의 [CLS] 토큰 → 선형층 → softmax         ([CLS]는 행 전체를 요약하는 자리)
-  생성:   y ~ p(y) → z ~ N(μ_y, σ_y²) → 디코더
+  사전분포  p(z) = Σ_y π_y N(μ_y, diag σ_y²),  y = 1, ..., G   (z: [CLS]를 뺀 토큰들을 펼친 벡터)
+  q(y|x)    인코더 출력의 [CLS] 토큰 → 선형층 → softmax         ([CLS]는 행 전체를 요약하는 자리)
+  디코더    p(x|z): 연속 변수 N(μ(z), σ²(z)), 범주 변수 softmax
+  생성      y ~ p(y) → z ~ N(μ_y, σ_y²) → x ~ p(x|z)
 
 이 파일만 읽어도 모델 전체를 알 수 있도록 뼈대(Tokenizer ~ Reconstructor)를 gaussian_vae.py와 같은 코드로 둔다.
 gaussian_vae.py와 다른 곳은 맨 아래 Model_GMVAE의 사전분포 부분(kl, sample_z)뿐이다.
 
 Reference:
-[1] Dilokthanakul et al. (2016), Deep Unsupervised Clustering with Gaussian Mixture Variational Autoencoders
-[2] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/model.py
+[1] Kingma & Welling (2014), Auto-Encoding Variational Bayes
+[2] Dilokthanakul et al. (2016), Deep Unsupervised Clustering with Gaussian Mixture Variational Autoencoders
+[3] Gorishniy et al. (2021), Revisiting Deep Learning Models for Tabular Data (FT-Transformer: Tokenizer, Transformer)
+
+코드 출처: Tokenizer ~ Reconstructor는 https://github.com/amazon-science/tabsyn (Apache-2.0)의 코드를 수정해 사용
 """
 #%%
 import math

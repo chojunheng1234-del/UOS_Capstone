@@ -2,7 +2,6 @@
 
 2026-2 서울시립대학교 통계자료분석캡스톤디자인.
 이 저장소에는 **모델 모듈만** 둔다. 데이터 읽기·전처리는 별도로 진행하고, 그 결과(텐서)를 이 모듈에 넣는다.
-구조는 [SPT](https://github.com/hoon-ii/SPT) / [TabSyn](https://github.com/amazon-science/tabsyn)의 `modules/`를 따른다.
 
 ## 구조
 
@@ -19,7 +18,7 @@ modules/
 ```
 
 모델 구조: Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
-(TabSyn / SPT의 model1.py 구조). 모델끼리 다른 곳은 각 파일 맨 아래 클래스의 사전분포 부분(`kl`, `sample_z`)뿐이다.
+모델끼리 다른 곳은 각 파일 맨 아래 클래스의 사전분포 부분(`kl`, `sample_z`)뿐이다.
 
 디코더 p(x|z) (모든 VAE 모델 공통, Kingma & Welling 2014):
 - 연속 변수: N(μ(z), σ²(z)). 디코더가 평균과 log σ²를 함께 출력하고, 생성할 때 이 분포에서 뽑는다
@@ -75,16 +74,24 @@ prior["WE"], prior["delta0"]                  # 범주별 의미 위치 [k, 16],
 - 모델 ① `gaussian_vae.py`: 순수 Gaussian VAE. 사전분포 N(0, I), 손실 = 표준 ELBO (β = 1 고정)
 - 모델 ② `gmvae.py`: ①과 같은 뼈대에 사전분포(`kl`, `sample_z`)만 혼합정규. q(y|x)는 인코더 출력의 [CLS] 토큰에서 계산
 - 네트워크 구조(Tokenizer, Transformer, Reconstructor)와 학습 절차(Adam, 검증 5%, 조기 종료)는 모든 모델이 같게 쓴다
-- 확산(Stage 2), β 스케줄링 같은 장치는 해당 모델(③ TabSyn 등)에서만 추가한다
+- 다른 장치는 그 장치를 쓰는 모델의 파일에서만 추가한다
 
 ## 하이퍼파라미터 메모
 
-- `d_token`: SPT 기본값 4로는 상품(`parent_asin`, 약 10만 개)을 토큰 하나로 복원하기 어렵다 (Amazon 5% 표본 시험에서 head 상품 복원 정확도 0.30 → `d_token=16`에서 1.00).
+- `d_token`: 4로는 상품(`parent_asin`, 약 10만 개)을 토큰 하나로 복원하기 어렵다 (Amazon 5% 표본 시험에서 head 상품 복원 정확도 0.30 → `d_token=16`에서 1.00).
 
 ## 진행 예정
 
 - [x] 모델 ① Gaussian VAE (`gaussian_vae.py`, `train.py`)
 - [x] 모델 ② GMVAE (`gmvae.py`)
 - [x] 의미 기반 사전분포 생성 (`semantic_prior.py`)
-- [ ] 모델 ③ TabSyn: Stage 2 잠재 확산 추가
+- [ ] 모델 ③
 - [ ] 모델 ④ 제안 모델 (`semantic_prior.py`의 결과를 상품 토큰의 사전분포로 사용)
+
+## 참고 문헌
+
+- Kingma & Welling (2014), Auto-Encoding Variational Bayes
+- Dilokthanakul et al. (2016), Deep Unsupervised Clustering with Gaussian Mixture Variational Autoencoders
+- Gorishniy et al. (2021), Revisiting Deep Learning Models for Tabular Data (FT-Transformer)
+
+코드 출처: `Tokenizer` ~ `Reconstructor`는 [amazon-science/tabsyn](https://github.com/amazon-science/tabsyn) (Apache-2.0)의 코드를 수정해 사용

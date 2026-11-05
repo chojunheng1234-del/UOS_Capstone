@@ -1,20 +1,17 @@
 """
-모델 ①: Gaussian VAE. TabSyn / SPT의 model1.py 구조(Transformer VAE)를 따른다.
+모델 ①: Gaussian VAE
   Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
-  사전분포 p(z) = N(0, I), 생성: z ~ N(0, I) → 디코더
-
-순수 VAE만 둔다. 모델 간 비교를 위해 다른 장치(확산, β 스케줄링 등)는 넣지 않는다.
-원본과 다른 점
-  1. 인코더 분산을 학습한다 (encoder_logvar). 표준 VAE의 형태 (SPT는 분산을 0.1로 고정)
-  2. Tokenizer.forward 중복 정의를 하나로 정리
-  3. sample(): 사전분포에서 z를 뽑아 생성한다. 범주는 디코더가 준 확률분포에서 샘플링한다
-  4. Stage 2용 Encoder_model / Decoder_model은 두지 않는다 (모델 ③ TabSyn에서 추가)
+  사전분포  p(z) = N(0, I)
+  디코더    p(x|z): 연속 변수 N(μ(z), σ²(z)), 범주 변수 softmax
+  생성      z ~ N(0, I) → x ~ p(x|z)
 
 이 파일만 읽어도 모델 전체를 알 수 있도록 뼈대(Tokenizer ~ Reconstructor)를 이 안에 둔다 (gmvae.py도 같은 코드).
 
 Reference:
-[1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/model.py
-[2] https://github.com/hoon-ii/SPT/blob/main/SPT/modules/model1.py
+[1] Kingma & Welling (2014), Auto-Encoding Variational Bayes
+[2] Gorishniy et al. (2021), Revisiting Deep Learning Models for Tabular Data (FT-Transformer: Tokenizer, Transformer)
+
+코드 출처: Tokenizer ~ Reconstructor는 https://github.com/amazon-science/tabsyn (Apache-2.0)의 코드를 수정해 사용
 """
 #%%
 import math

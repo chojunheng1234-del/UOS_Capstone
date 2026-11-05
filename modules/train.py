@@ -1,18 +1,17 @@
 """
-VAE 계열(① Gaussian VAE, ② GMVAE) 학습. TabSyn의 train1.py 구조를 따른다.
+VAE 계열(① Gaussian VAE, ② GMVAE) 학습
 
 손실은 표준 ELBO의 음수 (행별 합):
   재구성 = Σ 연속 변수의 Gaussian 음의 로그우도 0.5 × [(x − μ)²/σ² + log σ² + log 2π]
-           (디코더가 μ와 σ를 함께 출력. Kingma & Welling, 2014)
          + Σ 범주별 cross-entropy
   KL     = model.kl(μ, log σ²)   [사전분포는 모델이 정한다: ① N(0, I), ② 혼합정규]
-  손실   = 재구성 + KL   (β = 1 고정. TabSyn의 β 스케줄링·평균 손실은 쓰지 않는다)
+  손실   = 재구성 + KL   (β = 1)
 
 학습 절차(옵티마이저, 검증 분할, 조기 종료)는 모든 비교 모델에서 같게 둔다.
 → 모델 ① gaussian_vae.Model_VAE와 ② gmvae.Model_GMVAE가 이 함수를 그대로 함께 쓴다.
 
 Reference:
-[1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py
+[1] Kingma & Welling (2014), Auto-Encoding Variational Bayes
 """
 #%%
 import math
