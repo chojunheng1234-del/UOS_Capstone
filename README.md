@@ -13,13 +13,17 @@
 modules/
 ├── gaussian_vae.py    모델 ① Gaussian VAE   Model_VAE    사전분포 N(0, I)
 ├── gmvae.py           모델 ② GMVAE          Model_GMVAE  사전분포 혼합정규 (q(y|x)는 [CLS] 토큰에서)
-├── train.py           학습 절차 (①·② 공통): 손실 = 재구성 + model.kl(), β = 1, 검증 기반 조기 종료
+├── train.py           학습 절차 (①·② 공통): 손실 = 재구성(Gaussian NLL + CE) + model.kl(), β = 1, 검증 기반 조기 종료
 ├── semantic_prior.py  모델 ④용: LLM 임베딩 E → PCA → 백색화 → 범주별 의미 위치 (W·E)_c, δ0
 └── utils.py           set_random_seed, get_device
 ```
 
 모델 구조: Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
 (TabSyn / SPT의 model1.py 구조). 모델끼리 다른 곳은 각 파일 맨 아래 클래스의 사전분포 부분(`kl`, `sample_z`)뿐이다.
+
+디코더 p(x|z) (모든 VAE 모델 공통, Kingma & Welling 2014):
+- 연속 변수: N(μ(z), σ²(z)). 디코더가 평균과 log σ²를 함께 출력하고, 생성할 때 이 분포에서 뽑는다
+- 범주 변수: softmax 확률분포. 생성할 때 이 분포에서 뽑는다 (argmax를 쓰면 희귀 범주가 생성되지 않음)
 
 **뼈대를 고칠 때는 모든 모델 파일을 똑같이 고친다.** 뼈대가 달라지면 모델 비교가 공정하지 않다.
 

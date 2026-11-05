@@ -235,7 +235,8 @@ class VAE(nn.Module):
         return h, mu_z, logvar_z
 
 class Reconstructor(nn.Module):
-    """디코더 출력 토큰 → 연속 값 / 범주별 점수(logit)"""
+    """디코더 출력 토큰 → 연속 변수의 평균·log σ² / 범주별 점수(logit)
+    연속 변수는 Gaussian 디코더 p(x|z) = N(μ(z), σ²(z)) (Kingma & Welling, 2014)"""
     def __init__(self, d_numerical, categories, d_token):
         super(Reconstructor, self).__init__()
 
@@ -243,8 +244,10 @@ class Reconstructor(nn.Module):
         self.categories = categories
         self.d_token = d_token
 
-        self.weight = nn.Parameter(Tensor(d_numerical, d_token))
+        self.weight = nn.Parameter(Tensor(d_numerical, d_token))           # 평균 μ
         nn.init.xavier_uniform_(self.weight, gain=1 / math.sqrt(2))
+        self.weight_logvar = nn.Parameter(Tensor(d_numerical, d_token))    # log σ²
+        nn.init.xavier_uniform_(self.weight_logvar, gain=1 / math.sqrt(2))
         self.cat_recons = nn.ModuleList()
 
         for d in categories:
@@ -257,12 +260,13 @@ class Reconstructor(nn.Module):
         h_cat = h[:, self.d_numerical:]
 
         recon_x_num = torch.mul(h_num, self.weight.unsqueeze(0)).sum(-1)
+        recon_x_logvar = torch.mul(h_num, self.weight_logvar.unsqueeze(0)).sum(-1)
         recon_x_cat = []
 
         for i, recon in enumerate(self.cat_recons):
             recon_x_cat.append(recon(h_cat[:, i]))
 
-        return recon_x_num, recon_x_cat
+        return recon_x_num, recon_x_logvar, recon_x_cat
 
 
 class Model_GMVAE(nn.Module):
@@ -285,9 +289,9 @@ class Model_GMVAE(nn.Module):
 
     def forward(self, x_num, x_cat):
         h, mu_z, logvar_z = self.VAE(x_num, x_cat)
-        recon_x_num, recon_x_cat = self.Reconstructor(h)
+        recon_x_num, recon_x_logvar, recon_x_cat = self.Reconstructor(h)
 
-        return recon_x_num, recon_x_cat, mu_z, logvar_z
+        return recon_x_num, recon_x_logvar, recon_x_cat, mu_z, logvar_z
 
     """ 사전분포 p(z): 혼합정규 """
     def q_y(self, mu_z):
@@ -315,12 +319,12 @@ class Model_GMVAE(nn.Module):
 
     @torch.no_grad()
     def sample(self, n, batch_size = 2048):
-        """z ~ p(z) → 디코더 → 연속: 평균, 범주: 확률분포에서 샘플링"""
+        """z ~ p(z) → x ~ p(x|z): 연속은 N(μ, σ²)에서, 범주는 확률분포에서 샘플링"""
         nums, cats = [], []
         for i in range(0, n, batch_size):
             z = self.sample_z(min(batch_size, n - i))
-            x_num, x_cat = self.Reconstructor(self.VAE.decoder(z))
-            nums.append(x_num.cpu())
+            x_num, x_logvar, x_cat = self.Reconstructor(self.VAE.decoder(z))
+            nums.append((x_num + torch.exp(0.5 * x_logvar) * torch.randn_like(x_num)).cpu())
             # 범주는 디코더가 준 확률분포 p(x|z)에서 뽑는다 (argmax를 쓰면 희귀 범주가 생성되지 않음)
             cats.append(torch.stack([torch.multinomial(F.softmax(l, dim = -1), 1).squeeze(1)
                                      for l in x_cat], dim = 1).cpu())

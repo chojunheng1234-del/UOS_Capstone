@@ -2,7 +2,9 @@
 VAE 계열(① Gaussian VAE, ② GMVAE) 학습. TabSyn의 train1.py 구조를 따른다.
 
 손실은 표준 ELBO의 음수 (행별 합):
-  재구성 = 0.5 × Σ(연속 오차²)  [분산 1의 Gaussian]  +  Σ 범주별 cross-entropy
+  재구성 = Σ 연속 변수의 Gaussian 음의 로그우도 0.5 × [(x − μ)²/σ² + log σ² + log 2π]
+           (디코더가 μ와 σ를 함께 출력. Kingma & Welling, 2014)
+         + Σ 범주별 cross-entropy
   KL     = model.kl(μ, log σ²)   [사전분포는 모델이 정한다: ① N(0, I), ② 혼합정규]
   손실   = 재구성 + KL   (β = 1 고정. TabSyn의 β 스케줄링·평균 손실은 쓰지 않는다)
 
@@ -13,6 +15,7 @@ Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py
 """
 #%%
+import math
 import time
 
 import numpy as np
@@ -20,9 +23,10 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 #%%
-def compute_loss(model, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
+def compute_loss(model, X_num, X_cat, Recon_X_num, Recon_X_logvar, Recon_X_cat, mu_z, logvar_z):
     """배치 평균 (연속 재구성, 범주 재구성, KL, 범주 복원 정확도)"""
-    mse_loss = 0.5 * (X_num - Recon_X_num).pow(2).sum(dim = 1).mean()
+    num_loss = 0.5 * ((X_num - Recon_X_num).pow(2) / Recon_X_logvar.exp()
+                      + Recon_X_logvar + math.log(2 * math.pi)).sum(dim = 1).mean()
     ce_loss = 0
     acc = 0
     for idx, x_cat in enumerate(Recon_X_cat):
@@ -31,7 +35,7 @@ def compute_loss(model, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
     acc /= (idx + 1)
 
     loss_kld = model.kl(mu_z, logvar_z)
-    return mse_loss, ce_loss, loss_kld, acc
+    return num_loss, ce_loss, loss_kld, acc
 
 
 def train_function(model, X_num, X_cat, config, device):
@@ -50,35 +54,36 @@ def train_function(model, X_num, X_cat, config, device):
 
     best_val_loss, best_state, patience, history = float('inf'), None, 0, []
     for epoch in range(config['epochs']):
-        logs = {'loss': [], 'loss_mse': [], 'loss_ce': [], 'loss_kld': [], 'train_acc': []}
+        logs = {'loss': [], 'loss_num': [], 'loss_ce': [], 'loss_kld': [], 'train_acc': []}
         model.train(); t0 = time.time()
         for idx in tr_idx[torch.randperm(len(tr_idx), generator = g)].split(config['batch_size']):
             batch_num, batch_cat = X_num[idx].to(device), X_cat[idx].to(device)
 
             optimizer.zero_grad()
-            Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
-            loss_mse, loss_ce, loss_kld, train_acc = compute_loss(
-                model, batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)
-            loss = loss_mse + loss_ce + loss_kld
+            Recon_X_num, Recon_X_logvar, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
+            loss_num, loss_ce, loss_kld, train_acc = compute_loss(
+                model, batch_num, batch_cat, Recon_X_num, Recon_X_logvar, Recon_X_cat, mu_z, logvar_z)
+            loss = loss_num + loss_ce + loss_kld
             loss.backward()
             optimizer.step()
 
-            for key, v in zip(logs, [loss, loss_mse, loss_ce, loss_kld, train_acc]):
+            for key, v in zip(logs, [loss, loss_num, loss_ce, loss_kld, train_acc]):
                 logs[key].append(v.item())
 
         ''' Evaluation (검증 데이터) '''
         model.eval()
-        val = {'val_mse': 0.0, 'val_ce': 0.0, 'val_kld': 0.0, 'val_acc': 0.0}
+        val = {'val_num': 0.0, 'val_ce': 0.0, 'val_kld': 0.0, 'val_acc': 0.0}
         with torch.no_grad():
             for idx in val_idx.split(config['batch_size']):
                 batch_num, batch_cat = X_num[idx].to(device), X_cat[idx].to(device)
-                Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
-                for key, v in zip(val, compute_loss(model, batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)):
+                Recon_X_num, Recon_X_logvar, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
+                for key, v in zip(val, compute_loss(model, batch_num, batch_cat, Recon_X_num, Recon_X_logvar,
+                                                    Recon_X_cat, mu_z, logvar_z)):
                     val[key] += v.item() * len(idx) / len(val_idx)
-        val_loss = val['val_mse'] + val['val_ce'] + val['val_kld']
+        val_loss = val['val_num'] + val['val_ce'] + val['val_kld']
 
         history.append(dict(epoch = epoch + 1, **{k: np.mean(v) for k, v in logs.items()}, **val, val_loss = val_loss))
-        print(f"[epoch {epoch + 1:03d}] loss {np.mean(logs['loss']):.4f} (mse {np.mean(logs['loss_mse']):.4f}, "
+        print(f"[epoch {epoch + 1:03d}] loss {np.mean(logs['loss']):.4f} (num {np.mean(logs['loss_num']):.4f}, "
               f"ce {np.mean(logs['loss_ce']):.4f}, kld {np.mean(logs['loss_kld']):.4f}) | "
               f"val loss {val_loss:.4f}, acc {val['val_acc']:.4f} | {time.time() - t0:.0f}s")
 
