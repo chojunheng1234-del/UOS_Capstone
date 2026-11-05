@@ -7,7 +7,7 @@ VAE 계열(① Gaussian VAE, ② GMVAE) 학습. TabSyn의 train1.py 구조를 �
   손실   = 재구성 + KL   (β = 1 고정. TabSyn의 β 스케줄링·평균 손실은 쓰지 않는다)
 
 학습 절차(옵티마이저, 검증 분할, 조기 종료)는 모든 비교 모델에서 같게 둔다.
-→ Model_VAE(①)와 GMVAE(②)가 이 함수를 그대로 함께 쓴다.
+→ 모델 ① gaussian_vae.Model_VAE와 ② gmvae.Model_GMVAE가 이 함수를 그대로 함께 쓴다.
 
 Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py

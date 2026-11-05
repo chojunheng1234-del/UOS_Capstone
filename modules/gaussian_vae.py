@@ -10,6 +10,8 @@
   3. sample(): 사전분포에서 z를 뽑아 생성한다. 범주는 디코더가 준 확률분포에서 샘플링한다
   4. Stage 2용 Encoder_model / Decoder_model은 두지 않는다 (모델 ③ TabSyn에서 추가)
 
+이 파일만 읽어도 모델 전체를 알 수 있도록 뼈대(Tokenizer ~ Reconstructor)를 이 안에 둔다 (gmvae.py도 같은 코드).
+
 Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/model.py
 [2] https://github.com/hoon-ii/SPT/blob/main/SPT/modules/model1.py
@@ -282,7 +284,7 @@ class Model_VAE(nn.Module):
 
         return recon_x_num, recon_x_cat, mu_z, logvar_z
 
-    """ 사전분포 p(z): 다른 모델(GMVAE 등)은 아래 두 메서드만 바꾼다 """
+    """ 사전분포 p(z): 표준정규 N(0, I) """
     def kl(self, mu_z, logvar_z):
         """KL(q(z|x) || N(0, I)). 행별 합의 배치 평균. [CLS] 토큰은 디코더가 쓰지 않으므로 제외"""
         mu, logvar = mu_z[:, 1:], logvar_z[:, 1:]

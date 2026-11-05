@@ -6,16 +6,22 @@
 
 ## 구조
 
+모델마다 **파일 하나에 그 모델 전체**를 둔다. 파일 하나만 읽어도 모델을 이해할 수 있게 하기 위해서다.
+그래서 뼈대(Tokenizer, Transformer, VAE, Reconstructor)는 모델 파일마다 같은 코드로 들어 있다.
+
 ```
 modules/
-├── model1.py          모델 ① Gaussian VAE (Tokenizer → Transformer 인코더 → z → Transformer 디코더 → Reconstructor)
-│                        VAE        토큰화 + 인코더(μ, log σ²) + 디코더
-│                        Model_VAE  VAE + Reconstructor. 사전분포: kl(), sample_z() → N(0, I)
-├── gmvae.py           모델 ② GMVAE: Model_VAE를 상속, kl()과 sample_z()만 혼합정규로 교체
-├── train1.py          compute_loss (표준 ELBO: 재구성 + model.kl, β = 1), train_function (①·② 공통)
+├── gaussian_vae.py    모델 ① Gaussian VAE   Model_VAE    사전분포 N(0, I)
+├── gmvae.py           모델 ② GMVAE          Model_GMVAE  사전분포 혼합정규 (q(y|x)는 [CLS] 토큰에서)
+├── train.py           학습 절차 (①·② 공통): 손실 = 재구성 + model.kl(), β = 1, 검증 기반 조기 종료
 ├── semantic_prior.py  모델 ④용: LLM 임베딩 E → PCA → 백색화 → 범주별 의미 위치 (W·E)_c, δ0
 └── utils.py           set_random_seed, get_device
 ```
+
+모델 구조: Tokenizer (변수 하나 = 토큰 하나) → Transformer 인코더 (μ, log σ²) → z → Transformer 디코더 → Reconstructor
+(TabSyn / SPT의 model1.py 구조). 모델끼리 다른 곳은 각 파일 맨 아래 클래스의 사전분포 부분(`kl`, `sample_z`)뿐이다.
+
+**뼈대를 고칠 때는 모든 모델 파일을 똑같이 고친다.** 뼈대가 달라지면 모델 비교가 공정하지 않다.
 
 ## 입력 형식
 
@@ -28,8 +34,8 @@ modules/
 ## 사용 예
 
 ```python
-from modules.model1 import Model_VAE          # 모델 ②: from modules.gmvae import GMVAE
-from modules.train1 import train_function
+from modules.gaussian_vae import Model_VAE    # 모델 ②: from modules.gmvae import Model_GMVAE
+from modules.train import train_function
 from modules.utils import set_random_seed, get_device
 
 set_random_seed(42); device = get_device()
@@ -42,7 +48,7 @@ model, history = train_function(model, X_num, X_cat, config, device)
 syn_num, syn_cat = model.sample(n=len(X_num))      # 전처리 척도의 값 / 범주 번호 → 역변환은 전처리 쪽에서
 ```
 
-모델 ②는 클래스만 바꾸면 된다 (`GMVAE(..., n_components=50)`). 학습 함수와 생성 방법은 같다.
+모델 ②는 클래스만 바꾸면 된다 (`Model_GMVAE(..., n_components=50)`). 학습 함수와 생성 방법은 같다.
 
 ### 의미 기반 사전분포 (모델 ④용)
 
@@ -62,8 +68,8 @@ prior["WE"], prior["delta0"]                  # 범주별 의미 위치 [k, 16],
 ## 원칙: 모델 파일에는 그 모델만
 
 모델끼리 비교하기 위해, 각 모델 파일에는 그 모델의 정의만 둔다.
-- 모델 ① `model1.py`: 순수 Gaussian VAE. 사전분포 N(0, I), 손실 = 표준 ELBO (β = 1 고정)
-- 모델 ② `gmvae.py`: ①에서 사전분포(`kl`, `sample_z`)만 혼합정규로 교체. q(y|x)는 인코더 출력의 [CLS] 토큰에서 계산
+- 모델 ① `gaussian_vae.py`: 순수 Gaussian VAE. 사전분포 N(0, I), 손실 = 표준 ELBO (β = 1 고정)
+- 모델 ② `gmvae.py`: ①과 같은 뼈대에 사전분포(`kl`, `sample_z`)만 혼합정규. q(y|x)는 인코더 출력의 [CLS] 토큰에서 계산
 - 네트워크 구조(Tokenizer, Transformer, Reconstructor)와 학습 절차(Adam, 검증 5%, 조기 종료)는 모든 모델이 같게 쓴다
 - 확산(Stage 2), β 스케줄링 같은 장치는 해당 모델(③ TabSyn 등)에서만 추가한다
 
@@ -73,7 +79,7 @@ prior["WE"], prior["delta0"]                  # 범주별 의미 위치 [k, 16],
 
 ## 진행 예정
 
-- [x] 모델 ① Gaussian VAE (`model1.py`, `train1.py`)
+- [x] 모델 ① Gaussian VAE (`gaussian_vae.py`, `train.py`)
 - [x] 모델 ② GMVAE (`gmvae.py`)
 - [x] 의미 기반 사전분포 생성 (`semantic_prior.py`)
 - [ ] 모델 ③ TabSyn: Stage 2 잠재 확산 추가
