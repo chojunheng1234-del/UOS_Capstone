@@ -23,12 +23,17 @@ class CustomDataset(Dataset):
         return len(self.X_num)
 
     def __getitem__(self, idx):
+        # idx는 정수 하나 또는 인덱스 리스트 (BatchSampler로 배치 단위 조회 가능)
         return self.X_num[idx], self.X_cat[idx]
 
 
-def build_datasets(config):
-    """원자료 → 학습 / 홀드아웃 분할 → 학습 데이터로만 인코딩 정보(info)를 만든다."""
-    data, continuous_features, categorical_features, high_card_features, tier_bins, ClfTarget = load_raw_data(config)
+def build_datasets(config, raw=None):
+    """원자료 → 학습 / 홀드아웃 분할 → 학습 데이터로만 인코딩 정보(info)를 만든다.
+    raw: 이미 읽은 load_raw_data(config)의 반환값 (없으면 여기서 읽는다)
+    """
+    if raw is None:
+        raw = load_raw_data(config)
+    data, continuous_features, categorical_features, high_card_features, tier_bins, ClfTarget = raw
 
     # 1. 학습 / 홀드아웃 분할 (홀드아웃은 평가 기준선·프라이버시 평가에만 사용)
     rng = np.random.default_rng(config["seed"])

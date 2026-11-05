@@ -10,6 +10,7 @@ UOS_Capstone/
 ├── README.md
 ├── requirements.txt
 └── GaussianVAE/                 모델 ① Gaussian VAE  (현재 Amazon 데이터)
+    ├── exam.py                  셀(#%%) 단위 실습용: 데이터 → 전처리 → VAE 정의 → 학습 → 생성 → 시각화·평가 → β 스케줄링
     ├── main.py                  학습: 데이터 → 모델 → 학습 → 저장
     ├── inference.py             생성 → 원래 값으로 복원 → 평가
     ├── datasets/
