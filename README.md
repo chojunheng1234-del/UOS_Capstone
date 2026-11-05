@@ -8,11 +8,13 @@
 
 ```
 modules/
-├── model1.py    모델 ① Gaussian VAE (Tokenizer → Transformer 인코더 → z → Transformer 디코더 → Reconstructor)
-│                  VAE        토큰화 + 인코더(μ, log σ²) + 디코더
-│                  Model_VAE  VAE + Reconstructor. sample(n): z ~ N(0, I) → 디코더
-├── train1.py    compute_loss (표준 ELBO: 재구성 + KL, β = 1), train_function (검증 기반 조기 종료)
-└── utils.py     set_random_seed, get_device
+├── model1.py          모델 ① Gaussian VAE (Tokenizer → Transformer 인코더 → z → Transformer 디코더 → Reconstructor)
+│                        VAE        토큰화 + 인코더(μ, log σ²) + 디코더
+│                        Model_VAE  VAE + Reconstructor. 사전분포: kl(), sample_z() → N(0, I)
+├── gmvae.py           모델 ② GMVAE: Model_VAE를 상속, kl()과 sample_z()만 혼합정규로 교체
+├── train1.py          compute_loss (표준 ELBO: 재구성 + model.kl, β = 1), train_function (①·② 공통)
+├── semantic_prior.py  모델 ④용: LLM 임베딩 E → PCA → 백색화 → 범주별 의미 위치 (W·E)_c, δ0
+└── utils.py           set_random_seed, get_device
 ```
 
 ## 입력 형식
@@ -26,7 +28,7 @@ modules/
 ## 사용 예
 
 ```python
-from modules.model1 import Model_VAE
+from modules.model1 import Model_VAE          # 모델 ②: from modules.gmvae import GMVAE
 from modules.train1 import train_function
 from modules.utils import set_random_seed, get_device
 
@@ -40,10 +42,28 @@ model, history = train_function(model, X_num, X_cat, config, device)
 syn_num, syn_cat = model.sample(n=len(X_num))      # 전처리 척도의 값 / 범주 번호 → 역변환은 전처리 쪽에서
 ```
 
+모델 ②는 클래스만 바꾸면 된다 (`GMVAE(..., n_components=50)`). 학습 함수와 생성 방법은 같다.
+
+### 의미 기반 사전분포 (모델 ④용)
+
+```python
+from modules.semantic_prior import build_semantic_prior
+
+E = np.load("E.npy")                          # Datasets 쪽 결과: [k, p], i번째 행 = 범주 번호 i
+prior = build_semantic_prior(E, d=16, r=1.0)  # d = d_token (상품 토큰이 의미 부분 z_sem)
+prior["WE"], prior["delta0"]                  # 범주별 의미 위치 [k, 16], 범주별 사전분포의 표준편차
+```
+
+| 역할 분담 | 위치 |
+|---|---|
+| 범주 기술문 → LLM 임베딩 → `E.npy`, 전제 검증 | Datasets (다른 저장소) |
+| `E` → PCA → 사전분포 (`semantic_prior.py`), 모델 ④ | 이 저장소 `modules/` |
+
 ## 원칙: 모델 파일에는 그 모델만
 
 모델끼리 비교하기 위해, 각 모델 파일에는 그 모델의 정의만 둔다.
-- 모델 ① `model1.py` / `train1.py`: 순수 Gaussian VAE. 사전분포 N(0, I), 손실 = 표준 ELBO (β = 1 고정)
+- 모델 ① `model1.py`: 순수 Gaussian VAE. 사전분포 N(0, I), 손실 = 표준 ELBO (β = 1 고정)
+- 모델 ② `gmvae.py`: ①에서 사전분포(`kl`, `sample_z`)만 혼합정규로 교체. q(y|x)는 인코더 출력의 [CLS] 토큰에서 계산
 - 네트워크 구조(Tokenizer, Transformer, Reconstructor)와 학습 절차(Adam, 검증 5%, 조기 종료)는 모든 모델이 같게 쓴다
 - 확산(Stage 2), β 스케줄링 같은 장치는 해당 모델(③ TabSyn 등)에서만 추가한다
 
@@ -54,6 +74,7 @@ syn_num, syn_cat = model.sample(n=len(X_num))      # 전처리 척도의 값 / �
 ## 진행 예정
 
 - [x] 모델 ① Gaussian VAE (`model1.py`, `train1.py`)
-- [ ] 모델 ② GMVAE: 사전분포만 혼합정규로 교체
+- [x] 모델 ② GMVAE (`gmvae.py`)
+- [x] 의미 기반 사전분포 생성 (`semantic_prior.py`)
 - [ ] 모델 ③ TabSyn: Stage 2 잠재 확산 추가
-- [ ] 모델 ④ 제안 모델
+- [ ] 모델 ④ 제안 모델 (`semantic_prior.py`의 결과를 상품 토큰의 사전분포로 사용)

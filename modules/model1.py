@@ -282,13 +282,22 @@ class Model_VAE(nn.Module):
 
         return recon_x_num, recon_x_cat, mu_z, logvar_z
 
+    """ 사전분포 p(z): 다른 모델(GMVAE 등)은 아래 두 메서드만 바꾼다 """
+    def kl(self, mu_z, logvar_z):
+        """KL(q(z|x) || N(0, I)). 행별 합의 배치 평균. [CLS] 토큰은 디코더가 쓰지 않으므로 제외"""
+        mu, logvar = mu_z[:, 1:], logvar_z[:, 1:]
+        return -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim = (1, 2)).mean()
+
+    def sample_z(self, n):
+        """z ~ N(0, I)  [n, 토큰 수, d_token]"""
+        return torch.randn(n, self.n_latent_tokens, self.d_token, device = self.Reconstructor.weight.device)
+
     @torch.no_grad()
     def sample(self, n, batch_size = 2048):
-        """z ~ N(0, I)  [n, 토큰 수, d_token] → 디코더 → 연속: 평균, 범주: 확률분포에서 샘플링"""
-        device = self.Reconstructor.weight.device
+        """z ~ p(z) → 디코더 → 연속: 평균, 범주: 확률분포에서 샘플링"""
         nums, cats = [], []
         for i in range(0, n, batch_size):
-            z = torch.randn(min(batch_size, n - i), self.n_latent_tokens, self.d_token, device = device)
+            z = self.sample_z(min(batch_size, n - i))
             x_num, x_cat = self.Reconstructor(self.VAE.decoder(z))
             nums.append(x_num.cpu())
             # 범주는 디코더가 준 확률분포 p(x|z)에서 뽑는다 (argmax를 쓰면 희귀 범주가 생성되지 않음)

@@ -1,12 +1,13 @@
 """
-모델 ①: Gaussian VAE 학습. TabSyn의 train1.py 구조를 따른다.
+VAE 계열(① Gaussian VAE, ② GMVAE) 학습. TabSyn의 train1.py 구조를 따른다.
 
-순수 VAE만 둔다. 손실은 표준 ELBO의 음수 (행별 합):
+손실은 표준 ELBO의 음수 (행별 합):
   재구성 = 0.5 × Σ(연속 오차²)  [분산 1의 Gaussian]  +  Σ 범주별 cross-entropy
-  KL     = Σ KL(q(z|x) || N(0, I))  [디코더가 쓰는 토큰만, [CLS] 제외]
+  KL     = model.kl(μ, log σ²)   [사전분포는 모델이 정한다: ① N(0, I), ② 혼합정규]
   손실   = 재구성 + KL   (β = 1 고정. TabSyn의 β 스케줄링·평균 손실은 쓰지 않는다)
 
 학습 절차(옵티마이저, 검증 분할, 조기 종료)는 모든 비교 모델에서 같게 둔다.
+→ Model_VAE(①)와 GMVAE(②)가 이 함수를 그대로 함께 쓴다.
 
 Reference:
 [1] https://github.com/amazon-science/tabsyn/blob/main/tabsyn/vae/main.py
@@ -19,8 +20,8 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 #%%
-def compute_loss(X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
-    """행별 평균 (재구성, KL, 범주 복원 정확도)"""
+def compute_loss(model, X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
+    """배치 평균 (연속 재구성, 범주 재구성, KL, 범주 복원 정확도)"""
     mse_loss = 0.5 * (X_num - Recon_X_num).pow(2).sum(dim = 1).mean()
     ce_loss = 0
     acc = 0
@@ -29,8 +30,7 @@ def compute_loss(X_num, X_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z):
         acc += (x_cat.argmax(dim = -1) == X_cat[:, idx]).float().mean()
     acc /= (idx + 1)
 
-    mu, logvar = mu_z[:, 1:], logvar_z[:, 1:]          # [CLS] 토큰은 디코더가 쓰지 않으므로 제외
-    loss_kld = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim = (1, 2)).mean()
+    loss_kld = model.kl(mu_z, logvar_z)
     return mse_loss, ce_loss, loss_kld, acc
 
 
@@ -58,7 +58,7 @@ def train_function(model, X_num, X_cat, config, device):
             optimizer.zero_grad()
             Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
             loss_mse, loss_ce, loss_kld, train_acc = compute_loss(
-                batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)
+                model, batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)
             loss = loss_mse + loss_ce + loss_kld
             loss.backward()
             optimizer.step()
@@ -73,7 +73,7 @@ def train_function(model, X_num, X_cat, config, device):
             for idx in val_idx.split(config['batch_size']):
                 batch_num, batch_cat = X_num[idx].to(device), X_cat[idx].to(device)
                 Recon_X_num, Recon_X_cat, mu_z, logvar_z = model(batch_num, batch_cat)
-                for key, v in zip(val, compute_loss(batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)):
+                for key, v in zip(val, compute_loss(model, batch_num, batch_cat, Recon_X_num, Recon_X_cat, mu_z, logvar_z)):
                     val[key] += v.item() * len(idx) / len(val_idx)
         val_loss = val['val_mse'] + val['val_ce'] + val['val_kld']
 
