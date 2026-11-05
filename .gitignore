@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+
+# 원자료 · 학습 결과 (용량이 커서 올리지 않음)
+data/
+assets/
+syn_data/
+wandb/
+*.pth
+*.pt
+*.jsonl.gz
+
+# OS
+.DS_Store
